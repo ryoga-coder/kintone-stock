@@ -710,3 +710,358 @@
 
 })();
 
+
+/* ===== 出荷先別サマリ（追加機能） ===== */
+(function () {
+  'use strict';
+
+  // ▼▼▼ ここだけ自分のアプリに合わせて設定 ▼▼▼
+ const SHIP_SUMMARY = {
+  ENABLE: true,
+  TARGET_VIEW_NAME: null,        // 特定ビューだけにしたいなら '一覧名' を入れる
+  FISCAL_YEAR_START_MONTH: 4,
+  FIELD: {
+    DEST: 'shipping_to',
+    DATE: 'date',
+    QTY: 'kg',
+    SPECIES: 'species',
+    IO_TYPE: 'operation',
+  },
+  SHIP_VALUE: '出庫',            // ★ここは operation の実値に合わせて必要なら変更
+  LABEL: {
+    TITLE: '出荷状況（出荷先別）',
+    DEST: '出荷先一覧',
+    FY_TOTAL: '今年度の累計',
+    LAST_DATE: '直近の出荷日',
+    LAST_QTY: '直近の出荷量',
+    LAST_SPECIES: '出荷樹種',
+  },
+  FETCH_LIMIT: 5000,
+};
+
+  // ▲▲▲ 設定ここまで ▲▲▲
+
+  if (!SHIP_SUMMARY.ENABLE) return;
+
+  const INDEX_SHOW = 'app.record.index.show';
+
+  kintone.events.on(INDEX_SHOW, async (event) => {
+    try {
+      const viewName = event?.viewName || null;
+      if (SHIP_SUMMARY.TARGET_VIEW_NAME && viewName !== SHIP_SUMMARY.TARGET_VIEW_NAME) return event;
+
+      // 既存の集計を残したまま、別枠を追加
+      const space = getOrCreateSummarySpace();
+      space.innerHTML = ''; // 再描画用
+
+      const header = document.createElement('div');
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.gap = '12px';
+      header.style.margin = '8px 0';
+
+      const title = document.createElement('div');
+      title.textContent = SHIP_SUMMARY.LABEL.TITLE;
+      title.style.fontWeight = '700';
+      title.style.fontSize = '14px';
+
+      const reloadBtn = document.createElement('button');
+      reloadBtn.textContent = '更新';
+      reloadBtn.className = 'kintoneplugin-button-normal';
+      reloadBtn.style.padding = '4px 10px';
+
+      const status = document.createElement('div');
+      status.style.fontSize = '12px';
+      status.style.opacity = '0.75';
+
+      header.appendChild(title);
+      header.appendChild(reloadBtn);
+      header.appendChild(status);
+      space.appendChild(header);
+
+      const tableWrap = document.createElement('div');
+      tableWrap.style.border = '1px solid #ddd';
+      tableWrap.style.borderRadius = '6px';
+      tableWrap.style.overflow = 'auto';
+      tableWrap.style.maxHeight = '40vh';
+      space.appendChild(tableWrap);
+
+      reloadBtn.onclick = () => run(status, tableWrap);
+
+      await run(status, tableWrap);
+    } catch (e) {
+      console.error('[SHIP_SUMMARY] failed', e);
+    }
+    return event;
+  });
+
+  function getOrCreateSummarySpace() {
+    // 既存集計がどこに刺さってるか不明なので、一覧の上部に安全に差し込む
+    const root = document.querySelector('.gaia-argoui-app-index-pager')?.parentElement
+      || document.querySelector('.gaia-argoui-app-index') 
+      || document.body;
+
+    let box = document.getElementById('ws-ship-summary-box');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'ws-ship-summary-box';
+      box.style.margin = '10px 0';
+      box.style.padding = '10px';
+      box.style.background = '#fff';
+      box.style.border = '1px solid #ddd';
+      box.style.borderRadius = '8px';
+      // 先頭寄りに入れる（邪魔なら insertBefore の場所変えてOK）
+      root.insertBefore(box, root.firstChild);
+    }
+    return box;
+  }
+
+  async function run(statusEl, tableWrapEl) {
+    statusEl.textContent = '集計中…';
+    tableWrapEl.innerHTML = '';
+
+    const appId = (window.WS_ENV?.getAppIdSafe?.() || null);
+    if (!appId) {
+      statusEl.textContent = 'appId取得失敗（一覧コンテキスト問題）';
+      console.error('APP_ID_EMPTY');
+      return;
+    }
+
+    const { start, end } = getFiscalRange(new Date(), SHIP_SUMMARY.FISCAL_YEAR_START_MONTH);
+    const startStr = toYMD(start);
+    const endStr = toYMD(end);
+
+    const q = buildQuery(startStr, endStr);
+    const records = await fetchRecordsAll(appId, q, SHIP_SUMMARY.FETCH_LIMIT);
+
+    const rows = aggregate(records);
+    renderTable(rows, tableWrapEl);
+
+    statusEl.textContent = `対象：${startStr}〜${endStr} / ${records.length}件`;
+  }
+
+  function buildQuery(startStr, endStr) {
+    const F = SHIP_SUMMARY.FIELD;
+    const parts = [];
+
+    if (F.IO_TYPE) {
+      parts.push(`${F.IO_TYPE} = "${escapeKintoneValue(SHIP_SUMMARY.SHIP_VALUE)}"`);
+    }
+
+    // 日付範囲
+    parts.push(`${F.DATE} >= "${startStr}"`);
+    parts.push(`${F.DATE} <= "${endStr}"`);
+
+    // 並び：日付降順（直近計算が楽）
+    return `${parts.join(' and ')} order by ${F.DATE} desc`;
+  }
+
+  async function fetchRecordsAll(appId, query, maxTotal) {
+    // cursorで取る（失敗したらoffset方式にフォールバック）
+    try {
+      return await fetchByCursor(appId, query);
+    } catch (e) {
+      console.warn('[SHIP_SUMMARY] cursor failed -> fallback offset', e);
+      return await fetchByOffset(appId, query, maxTotal);
+    }
+  }
+
+  async function fetchByCursor(appId, query) {
+    const F = SHIP_SUMMARY.FIELD;
+    const fields = [F.DEST, F.DATE, F.QTY, F.SPECIES].filter(Boolean);
+
+    const createResp = await kintone.api('/k/v1/records/cursor.json', 'POST', {
+      app: appId,
+      query,
+      fields,
+      size: 500,
+    });
+
+    const cursorId = createResp.id;
+    const all = [];
+    while (true) {
+      const resp = await kintone.api('/k/v1/records/cursor.json', 'GET', { id: cursorId });
+      all.push(...resp.records);
+      if (!resp.next) break;
+    }
+    await kintone.api('/k/v1/records/cursor.json', 'DELETE', { id: cursorId });
+    return all;
+  }
+
+  async function fetchByOffset(appId, query, maxTotal) {
+    const F = SHIP_SUMMARY.FIELD;
+    const fields = [F.DEST, F.DATE, F.QTY, F.SPECIES].filter(Boolean);
+
+    const all = [];
+    const pageSize = 500;
+    for (let offset = 0; offset < maxTotal; offset += pageSize) {
+      const resp = await kintone.api('/k/v1/records.json', 'GET', {
+        app: appId,
+        query: `${query} limit ${pageSize} offset ${offset}`,
+        fields,
+      });
+      all.push(...resp.records);
+      if (!resp.records || resp.records.length < pageSize) break;
+    }
+    return all;
+  }
+
+  function aggregate(records) {
+    const F = SHIP_SUMMARY.FIELD;
+    const map = new Map();
+
+    // recordsは日付desc想定
+    for (const r of records) {
+      const dest = (r[F.DEST]?.value ?? '').trim() || '(未設定)';
+      const date = r[F.DATE]?.value || null;
+      const qty = num(r[F.QTY]?.value);
+      const species = (r[F.SPECIES]?.value ?? '').trim();
+
+      if (!map.has(dest)) {
+        map.set(dest, {
+          dest,
+          fyTotal: 0,
+          lastDate: null,
+          lastQty: 0,
+          lastSpeciesSet: new Set(),
+        });
+      }
+      const row = map.get(dest);
+
+      row.fyTotal += qty;
+
+      // 直近は最初に見た日付（descなので）
+      if (!row.lastDate && date) {
+        row.lastDate = date;
+      }
+      // 直近日付と同じなら直近量は合算（同日複数行対応）
+      if (row.lastDate && date && normalizeDate(row.lastDate) === normalizeDate(date)) {
+        row.lastQty += qty;
+        if (species) row.lastSpeciesSet.add(species);
+      }
+    }
+
+    const rows = Array.from(map.values()).map((x) => ({
+      dest: x.dest,
+      fyTotal: x.fyTotal,
+      lastDate: x.lastDate ? normalizeDate(x.lastDate) : '',
+      lastQty: x.lastQty,
+      lastSpecies: Array.from(x.lastSpeciesSet).join(','),
+    }));
+
+    // 今年度累計の多い順
+    rows.sort((a, b) => (b.fyTotal - a.fyTotal));
+
+    // 合計行
+    const total = rows.reduce(
+      (acc, r) => {
+        acc.fyTotal += r.fyTotal;
+        acc.lastQty += r.lastQty; // これは「各社の直近量合計」なので、必要なら消してOK
+        if (r.lastDate && (!acc.maxLastDate || r.lastDate > acc.maxLastDate)) acc.maxLastDate = r.lastDate;
+        return acc;
+      },
+      { fyTotal: 0, lastQty: 0, maxLastDate: '' }
+    );
+
+    rows.push({
+      dest: '合計',
+      fyTotal: total.fyTotal,
+      lastDate: total.maxLastDate,
+      lastQty: '',
+      lastSpecies: '',
+    });
+
+    return rows;
+  }
+
+  function renderTable(rows, wrap) {
+    const L = SHIP_SUMMARY.LABEL;
+
+    const table = document.createElement('table');
+    table.style.width = '100%';
+    table.style.borderCollapse = 'collapse';
+    table.style.fontSize = '12px';
+
+    const thead = document.createElement('thead');
+    const trh = document.createElement('tr');
+    [L.DEST, L.FY_TOTAL, L.LAST_DATE, L.LAST_QTY, L.LAST_SPECIES].forEach((t) => {
+      const th = document.createElement('th');
+      th.textContent = t;
+      th.style.position = 'sticky';
+      th.style.top = '0';
+      th.style.background = '#f7f7f7';
+      th.style.borderBottom = '1px solid #ddd';
+      th.style.padding = '8px';
+      th.style.textAlign = 'left';
+      trh.appendChild(th);
+    });
+    thead.appendChild(trh);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    rows.forEach((r, idx) => {
+      const tr = document.createElement('tr');
+      if (r.dest === '合計') {
+        tr.style.fontWeight = '700';
+        tr.style.borderTop = '2px solid #ccc';
+      }
+      const cells = [
+        r.dest,
+        fmtKg(r.fyTotal),
+        r.lastDate,
+        r.lastQty === '' ? '' : fmtKg(r.lastQty),
+        r.lastSpecies,
+      ];
+      cells.forEach((v) => {
+        const td = document.createElement('td');
+        td.textContent = v;
+        td.style.borderBottom = '1px solid #eee';
+        td.style.padding = '8px';
+        td.style.whiteSpace = 'nowrap';
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+
+    wrap.appendChild(table);
+  }
+
+  // ===== util =====
+  function getFiscalRange(now, startMonth) {
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    const fyYear = (m >= startMonth) ? y : (y - 1);
+    const start = new Date(fyYear, startMonth - 1, 1);
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return { start, end };
+  }
+
+  function toYMD(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function normalizeDate(v) {
+    // kintoneは date: "YYYY-MM-DD" / datetime: "YYYY-MM-DDTHH:mm:ssZ"
+    return String(v).slice(0, 10);
+  }
+
+  function num(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function fmtKg(v) {
+    // 表示はお好みで（整数/小数）
+    const n = Math.round(Number(v) * 10) / 10;
+    return `${n}`;
+  }
+
+  function escapeKintoneValue(s) {
+    return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
+})();
