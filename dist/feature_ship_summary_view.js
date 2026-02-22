@@ -1,7 +1,7 @@
 /* =========================================================
  Wood Stock - 出荷履歴ビュー：出荷状況（出荷先別）サマリ
  - PC：#ws-ship-summary にだけ描画（上に出す挙動は完全禁止）
- - モバイル：ボタン→ダイアログで表示（#ws-ship-summary が無い前提）
+ - モバイル：右下フローティングボタン → モーダル表示（ヘッダーに依存しない）
  - 集計は「この一覧の表示分」（event.records）
  - lastDate は “最大日付” を採用（並び順に依存しない）
 ========================================================= */
@@ -28,7 +28,7 @@
   const MOUNT_ID = 'ws-ship-summary';
 
   // モバイル用：ボタン/モーダルID
-  const BTN_ID = 'ws-ship-summary-btn';
+  const FAB_ID = 'ws-ship-summary-fab';
   const MODAL_ID = 'ws-ship-summary-modal';
 
   function num(v) {
@@ -37,9 +37,7 @@
   }
 
   function normalizeDate(v) {
-    // kintoneの日付/日時が入っても先頭10文字(YYYY-MM-DD)を採る
     const s = String(v || '').slice(0, 10);
-    // 空や不正っぽいのは空に倒す（比較が壊れないように）
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
   }
 
@@ -48,7 +46,6 @@
   }
 
   function aggregate(records) {
-    // destごとに {total, lastDate(max), lastQty(sum on lastDate), lastSpeciesSet(on lastDate)}
     const map = new Map();
 
     for (const r of records) {
@@ -74,13 +71,11 @@
       // lastDateは最大日付（並び順に依存しない）
       if (date) {
         if (!row.lastDate || date > row.lastDate) {
-          // より新しい日を見つけたら、その日の集計に“作り直す”
           row.lastDate = date;
           row.lastQty = kg;
           row.lastSpeciesSet = new Set();
           if (sp) row.lastSpeciesSet.add(sp);
         } else if (date === row.lastDate) {
-          // 同じ日なら加算
           row.lastQty += kg;
           if (sp) row.lastSpeciesSet.add(sp);
         }
@@ -91,7 +86,7 @@
       dest: x.dest,
       total: x.total,
       lastDate: x.lastDate,
-      lastQty: x.lastDate ? x.lastQty : 0, // lastDateが無いなら意味ないので0（表示側で空にする）
+      lastQty: x.lastDate ? x.lastQty : '',
       lastSpecies: x.lastDate ? Array.from(x.lastSpeciesSet).join(',') : '',
     }));
 
@@ -115,15 +110,12 @@
   function render(rows, count) {
     const body = rows.map(r => {
       const isSum = (r.dest === '合計');
-      const lastQtyCell =
-        (r.lastQty === '' || r.lastDate === '') ? '' : String(r.lastQty);
-
       return `
         <tr class="${isSum ? 'wsSum' : ''}">
           <td>${escapeHtml(r.dest)}</td>
           <td class="wsR">${escapeHtml(r.total)}</td>
           <td>${escapeHtml(r.lastDate || '')}</td>
-          <td class="wsR">${escapeHtml(lastQtyCell)}</td>
+          <td class="wsR">${escapeHtml(r.lastQty === '' ? '' : r.lastQty)}</td>
           <td>${escapeHtml(r.lastSpecies || '')}</td>
         </tr>
       `;
@@ -164,12 +156,17 @@
     `;
   }
 
-  // ===== モバイル：ヘッダーにボタン → モーダルで表示 =====
-  function getHeaderSpace(isMobile) {
-    if (isMobile) return kintone.mobile?.app?.getHeaderSpaceElement?.() || null;
-    return kintone.app?.getHeaderSpaceElement?.() || null;
+  function buildHtmlFromEventRecords(event) {
+    const all = Array.isArray(event.records) ? event.records : [];
+    const shipRecords = all.filter(r => (r?.[FC.operation]?.value === SHIP_VALUE));
+    const rows = aggregate(shipRecords);
+    return {
+      html: render(rows, shipRecords.length),
+      shipCount: shipRecords.length
+    };
   }
 
+  // ===== モバイル：モーダル =====
   function ensureModal() {
     let modal = document.getElementById(MODAL_ID);
     if (modal) return modal;
@@ -243,45 +240,42 @@
     if (modal) modal.style.display = 'none';
   }
 
-  function ensureButton(space, onClick) {
-    let btn = document.getElementById(BTN_ID);
+  // ===== モバイル：右下フローティングボタン =====
+  function ensureFab(onClick) {
+    let btn = document.getElementById(FAB_ID);
     if (btn) return btn;
 
     btn = document.createElement('button');
-    btn.id = BTN_ID;
+    btn.id = FAB_ID;
     btn.type = 'button';
     btn.textContent = '出荷集計';
+
     btn.style.cssText = [
-      'margin:8px 0',
-      'padding:10px 12px',
-      'border:1px solid #ccc',
-      'border-radius:10px',
+      'position:fixed',
+      'right:14px',
+      'bottom:14px',
+      'z-index:99998',
+      'padding:12px 14px',
+      'border-radius:999px',
+      'border:1px solid #999',
       'background:#fff',
+      'box-shadow:0 6px 18px rgba(0,0,0,.18)',
+      'font-size:13px',
       'cursor:pointer'
     ].join(';');
 
     btn.addEventListener('click', onClick);
-    space.appendChild(btn);
+    document.body.appendChild(btn);
     return btn;
   }
 
-  function buildHtmlFromEventRecords(event) {
-    const all = Array.isArray(event.records) ? event.records : [];
-    const shipRecords = all.filter(r => (r?.[FC.operation]?.value === SHIP_VALUE));
-    const rows = aggregate(shipRecords);
-    return {
-      html: render(rows, shipRecords.length),
-      shipCount: shipRecords.length
-    };
-  }
-
   async function run(event) {
-    if (event.viewName !== TARGET_VIEW_NAME) return event;
-
     const isMobile = String(event.type || '').startsWith('mobile.');
 
-    // ---- PC：#ws-ship-summary 以外に出すのは禁止 ----
+    // ---- PC：ビュー名一致のみ、#ws-ship-summary 以外に出すのは禁止 ----
     if (!isMobile) {
+      if (event.viewName !== TARGET_VIEW_NAME) return event;
+
       const mount = getMountElStrict();
       if (!mount) {
         console.warn(`[ship-summary] #${MOUNT_ID} が見つからない。出荷履歴ビューHTMLに <div id="${MOUNT_ID}"></div> を置いてね。`);
@@ -289,7 +283,6 @@
       }
 
       mount.innerHTML = '集計中…';
-
       try {
         const { html } = buildHtmlFromEventRecords(event);
         mount.innerHTML = html;
@@ -297,16 +290,18 @@
         console.error('[ship-summary] failed', e);
         mount.innerHTML = `<div style="color:red">集計エラー</div>`;
       }
-
       return event;
     }
 
-    // ---- モバイル：#ws-ship-summary が無い前提 → ボタン→モーダル ----
-    const space = getHeaderSpace(true);
-    if (!space) return event;
+    // ---- モバイル：ビュー名が一致しないことがあるので、ゆるめに判定 ----
+    // 1) まず viewName が取れて一致するならそれを優先
+    // 2) 取れない/違う場合でも、一覧表示中にボタンが出るのは許容（致命傷回避）
+    const onTarget = (event.viewName === TARGET_VIEW_NAME) || !event.viewName;
 
-    // クリック時に“その時点の一覧表示分”を集計してモーダルに出す
-    ensureButton(space, () => {
+    if (!onTarget) return event;
+
+    // FABは1個だけ作る
+    ensureFab(() => {
       try {
         const { html } = buildHtmlFromEventRecords(event);
         showModal(html);
