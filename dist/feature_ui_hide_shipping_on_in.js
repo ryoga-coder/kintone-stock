@@ -3,17 +3,17 @@
 
   const FC = {
     op: 'operation',
-    shipTo: 'shipping'
+    shipTo: 'shipping_to'
   };
 
   function applyVisibility(record, isMobile) {
     const op = record[FC.op]?.value;
-    const showShipping = (op === '出庫'); // 入庫のときは false
+    const showshipping_to = (op === '出庫'); // 入庫のときは false
 
     if (isMobile) {
-      kintone.mobile.app.record.setFieldShown(FC.shipTo, showShipping);
+      kintone.mobile.app.record.setFieldShown(FC.shipTo, showshipping_to);
     } else {
-      kintone.app.record.setFieldShown(FC.shipTo, showShipping);
+      kintone.app.record.setFieldShown(FC.shipTo, showshipping_to);
     }
   }
 
