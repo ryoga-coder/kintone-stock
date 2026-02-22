@@ -1,0 +1,72 @@
+name: Generate jsDelivr URLs
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "dist/**"
+      - "!dist/cdn_urls.md"  # ← これが無限ループ防止の要
+
+permissions:
+  contents: write
+
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate dist/cdn_urls.md
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPO="${GITHUB_REPOSITORY}"
+          SHA="${GITHUB_SHA}"
+          OUT="dist/cdn_urls.md"
+
+          {
+            echo "# jsDelivr CDN URLs"
+            echo ""
+            echo "- updated_at (UTC): $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "- commit: ${SHA}"
+            echo ""
+            echo "## 固定URL（コミットSHA固定：推奨）"
+            echo ""
+          } > "$OUT"
+
+          shopt -s nullglob
+          for f in dist/*.js; do
+            b="$(basename "$f")"
+            echo "- https://cdn.jsdelivr.net/gh/${REPO}@${SHA}/dist/${b}" >> "$OUT"
+          done
+
+          {
+            echo ""
+            echo "## main参照（URL固定だがキャッシュ影響あり）"
+            echo ""
+          } >> "$OUT"
+
+          for f in dist/*.js; do
+            b="$(basename "$f")"
+            echo "- https://cdn.jsdelivr.net/gh/${REPO}@main/dist/${b}" >> "$OUT"
+          done
+
+      - name: Commit and push (only if changed)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add dist/cdn_urls.md
+
+          # 変更がなければ何もしない
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: update jsDelivr URL list"
+          git push
