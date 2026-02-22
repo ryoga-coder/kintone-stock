@@ -1,7 +1,7 @@
 /* =========================================================
  Wood Stock - 出荷履歴ビュー：出荷状況（出荷先別）サマリ
- - PC：#ws-ship-summary にだけ描画（上に出す挙動は完全禁止）
- - モバイル：右下フローティングボタン → モーダル表示（ヘッダーに依存しない）
+ - PC/モバイル共通：右下ボタン → モーダル表示（常時表示しない）
+ - カスタムビューHTMLに依存しない（#ws-ship-summary 不要）
  - 集計は「この一覧の表示分」（event.records）
  - lastDate は “最大日付” を採用（並び順に依存しない）
 ========================================================= */
@@ -11,7 +11,7 @@
   if (!window.WS_ENV?.assertKnownEnv?.()) return;
   window.WS_ENV.showDevBadge();
 
-  const TARGET_VIEW_NAME = '出荷履歴';
+  const TARGET_VIEW_NAME = '出荷履歴'; // この1つだけで運用
 
   const FC = {
     shipping_to: 'shipping_to',
@@ -24,10 +24,6 @@
   const SHIP_VALUE = '出庫';
   const USE_ABS_KG = true;
 
-  // PCカスタムビューHTML側に置いた div id（PCはここ以外には出さない）
-  const MOUNT_ID = 'ws-ship-summary';
-
-  // モバイル用：ボタン/モーダルID
   const FAB_ID = 'ws-ship-summary-fab';
   const MODAL_ID = 'ws-ship-summary-modal';
 
@@ -39,10 +35,6 @@
   function normalizeDate(v) {
     const s = String(v || '').slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
-  }
-
-  function getMountElStrict() {
-    return document.getElementById(MOUNT_ID);
   }
 
   function aggregate(records) {
@@ -68,7 +60,7 @@
       const row = map.get(dest);
       row.total += kg;
 
-      // lastDateは最大日付（並び順に依存しない）
+      // lastDate = 最大日付
       if (date) {
         if (!row.lastDate || date > row.lastDate) {
           row.lastDate = date;
@@ -123,7 +115,7 @@
 
     return `
       <style>
-        .wsShipWrap{background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px;margin:10px 0}
+        .wsShipWrap{background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px;margin:0}
         .wsShipHead{display:flex;align-items:baseline;gap:12px;margin:2px 0 10px}
         .wsShipTitle{font-weight:700;font-size:14px}
         .wsShipNote{font-size:12px;color:#666}
@@ -160,13 +152,10 @@
     const all = Array.isArray(event.records) ? event.records : [];
     const shipRecords = all.filter(r => (r?.[FC.operation]?.value === SHIP_VALUE));
     const rows = aggregate(shipRecords);
-    return {
-      html: render(rows, shipRecords.length),
-      shipCount: shipRecords.length
-    };
+    return { html: render(rows, shipRecords.length) };
   }
 
-  // ===== モバイル：モーダル =====
+  // ===== モーダル =====
   function ensureModal() {
     let modal = document.getElementById(MODAL_ID);
     if (modal) return modal;
@@ -223,7 +212,6 @@
     });
 
     document.body.appendChild(modal);
-
     modal.querySelector('#ws-ship-summary-close').addEventListener('click', hideModal);
 
     return modal;
@@ -240,7 +228,7 @@
     if (modal) modal.style.display = 'none';
   }
 
-  // ===== モバイル：右下フローティングボタン =====
+  // ===== 右下ボタン =====
   function ensureFab(onClick) {
     let btn = document.getElementById(FAB_ID);
     if (btn) return btn;
@@ -249,7 +237,6 @@
     btn.id = FAB_ID;
     btn.type = 'button';
     btn.textContent = '出荷集計';
-
     btn.style.cssText = [
       'position:fixed',
       'right:14px',
@@ -270,43 +257,20 @@
   }
 
   async function run(event) {
-    const isMobile = String(event.type || '').startsWith('mobile.');
+    if (event.viewName !== TARGET_VIEW_NAME) return event;
 
-    // ---- PC：ビュー名一致のみ、#ws-ship-summary 以外に出すのは禁止 ----
-    if (!isMobile) {
-      if (event.viewName !== TARGET_VIEW_NAME) return event;
-
-      const mount = getMountElStrict();
-      if (!mount) {
-        console.warn(`[ship-summary] #${MOUNT_ID} が見つからない。出荷履歴ビューHTMLに <div id="${MOUNT_ID}"></div> を置いてね。`);
-        return event;
-      }
-
-      mount.innerHTML = '集計中…';
-      try {
-        const { html } = buildHtmlFromEventRecords(event);
-        mount.innerHTML = html;
-      } catch (e) {
-        console.error('[ship-summary] failed', e);
-        mount.innerHTML = `<div style="color:red">集計エラー</div>`;
-      }
-      return event;
+    // 一覧データが無いケース保険
+    const all = Array.isArray(event.records) ? event.records : [];
+    if (!all.length) {
+      // 0件でもボタンは出す（空で開いてもOK）
     }
 
-    // ---- モバイル：ビュー名が一致しないことがあるので、ゆるめに判定 ----
-    // 1) まず viewName が取れて一致するならそれを優先
-    // 2) 取れない/違う場合でも、一覧表示中にボタンが出るのは許容（致命傷回避）
-    const onTarget = (event.viewName === TARGET_VIEW_NAME) || !event.viewName;
-
-    if (!onTarget) return event;
-
-    // FABは1個だけ作る
     ensureFab(() => {
       try {
         const { html } = buildHtmlFromEventRecords(event);
         showModal(html);
       } catch (e) {
-        console.error('[ship-summary] mobile modal failed', e);
+        console.error('[ship-summary] modal failed', e);
         showModal(`<div style="color:red">集計エラー</div>`);
       }
     });
