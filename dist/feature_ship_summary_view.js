@@ -1,17 +1,16 @@
 /* =========================================================
- Wood Stock - 出荷履歴ビュー：出荷状況（出荷先別）サマリ
- - PC/モバイル共通：右下ボタン → モーダル表示（常時表示しない）
- - カスタムビューHTMLに依存しない（#ws-ship-summary 不要）
- - 集計は「この一覧の表示分」（event.records）
- - lastDate は “最大日付” を採用（並び順に依存しない）
+ Wood Stock - 出荷履歴：出荷状況（出荷先別）サマリ
+ - クリックでAPI取得→集計（event.records依存しない）
+ - PC/モバイル共通：右下ボタン → モーダル
 ========================================================= */
 (function () {
   'use strict';
 
-  if (!window.WS_ENV?.assertKnownEnv?.()) return;
-  window.WS_ENV.showDevBadge();
+  // ★ここがスマホで false になってる可能性があるので、まずは“通す”
+  // if (!window.WS_ENV?.assertKnownEnv?.()) return;
+  // window.WS_ENV.showDevBadge();
 
-  const TARGET_VIEW_NAME = '出荷履歴'; // この1つだけで運用
+  const TARGET_VIEW_NAME = '出荷履歴'; // 一応残す（取れない環境もある）
 
   const FC = {
     shipping_to: 'shipping_to',
@@ -26,6 +25,44 @@
 
   const FAB_ID = 'ws-ship-summary-fab';
   const MODAL_ID = 'ws-ship-summary-modal';
+
+  // ★URLから appId を抜く（/k/181/ など）
+  function getAppIdFromUrl() {
+    try {
+      const m = location.pathname.match(/\/k\/(\d+)\//);
+      if (m && m[1]) return Number(m[1]);
+    } catch (e) {}
+    return null;
+  }
+
+  // ★最強 appId 取得（mobile → pc → url）
+  function getAppIdSafe() {
+    try {
+      if (kintone.mobile?.app?.getId) {
+        const id = kintone.mobile.app.getId();
+        if (id) return id;
+      }
+    } catch (e) {}
+
+    try {
+      if (kintone.app?.getId) {
+        const id = kintone.app.getId();
+        if (id) return id;
+      }
+    } catch (e) {}
+
+    return getAppIdFromUrl();
+  }
+
+  function isIndexLikeScreen() {
+    // “一覧っぽい”ところでだけ出す（厳密には取れないのでゆるめ）
+    // detail/edit/create っぽいURLなら出さない
+    const href = location.href;
+    if (/record=/.test(href)) return false;
+    if (/mode=edit/.test(href)) return false;
+    if (/mode=new/.test(href)) return false;
+    return /\/k\/\d+\//.test(location.pathname);
+  }
 
   function num(v) {
     const n = Number(v || 0);
@@ -60,7 +97,6 @@
       const row = map.get(dest);
       row.total += kg;
 
-      // lastDate = 最大日付
       if (date) {
         if (!row.lastDate || date > row.lastDate) {
           row.lastDate = date;
@@ -99,7 +135,7 @@
       .replaceAll("'", '&#39;');
   }
 
-  function render(rows, count) {
+  function render(rows, note) {
     const body = rows.map(r => {
       const isSum = (r.dest === '合計');
       return `
@@ -116,7 +152,7 @@
     return `
       <style>
         .wsShipWrap{background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px;margin:0}
-        .wsShipHead{display:flex;align-items:baseline;gap:12px;margin:2px 0 10px}
+        .wsShipHead{display:flex;align-items:baseline;gap:12px;margin:2px 0 10px;flex-wrap:wrap}
         .wsShipTitle{font-weight:700;font-size:14px}
         .wsShipNote{font-size:12px;color:#666}
         .wsShipTable{width:100%;border-collapse:collapse;font-size:13px}
@@ -129,14 +165,14 @@
       <div class="wsShipWrap">
         <div class="wsShipHead">
           <div class="wsShipTitle">出荷状況（出荷先別）</div>
-          <div class="wsShipNote">※この一覧の表示分で集計（${count}件）</div>
+          <div class="wsShipNote">${escapeHtml(note)}</div>
         </div>
 
         <table class="wsShipTable">
           <thead>
             <tr>
               <th>出荷先一覧</th>
-              <th class="wsR">今年度の累計</th>
+              <th class="wsR">累計</th>
               <th>直近の出荷日</th>
               <th class="wsR">直近の出荷量</th>
               <th>出荷樹種</th>
@@ -148,11 +184,13 @@
     `;
   }
 
-  function buildHtmlFromEventRecords(event) {
-    const all = Array.isArray(event.records) ? event.records : [];
-    const shipRecords = all.filter(r => (r?.[FC.operation]?.value === SHIP_VALUE));
-    const rows = aggregate(shipRecords);
-    return { html: render(rows, shipRecords.length) };
+  async function fetchRecentShipRecords(appId) {
+    const recordsUrl = kintone.api.url('/k/v1/records.json', true);
+    // ★「直近500件の出庫」を取る（フィルタや並び順に依存しない）
+    // dateが空のレコードがあるなら order by $id desc の方が安全。必要なら変えて。
+    const query = `${FC.operation} = "${SHIP_VALUE}" order by ${FC.date} desc limit 500`;
+    const res = await kintone.api(recordsUrl, 'GET', { app: appId, query });
+    return res.records || [];
   }
 
   // ===== モーダル =====
@@ -256,28 +294,42 @@
     return btn;
   }
 
-  async function run(event) {
-    if (event.viewName !== TARGET_VIEW_NAME) return event;
+  async function openSummary() {
+    try {
+      showModal('集計中…');
 
-    // 一覧データが無いケース保険
-    const all = Array.isArray(event.records) ? event.records : [];
-    if (!all.length) {
-      // 0件でもボタンは出す（空で開いてもOK）
-    }
-
-    ensureFab(() => {
-      try {
-        const { html } = buildHtmlFromEventRecords(event);
-        showModal(html);
-      } catch (e) {
-        console.error('[ship-summary] modal failed', e);
-        showModal(`<div style="color:red">集計エラー</div>`);
+      const appId = getAppIdSafe();
+      if (!appId) {
+        showModal('<div style="color:red">appId が取得できません</div>');
+        return;
       }
-    });
 
-    return event;
+      const records = await fetchRecentShipRecords(appId);
+      const rows = aggregate(records);
+      const note = `直近500件の出庫から集計（${records.length}件）`;
+      showModal(render(rows, note));
+    } catch (e) {
+      console.error(e);
+      showModal('<div style="color:red">集計エラー</div>');
+    }
   }
 
-  kintone.events.on(['app.record.index.show', 'mobile.app.record.index.show'], run);
+  // ★イベントに依存せず「画面にいたら出す」
+  function tick() {
+    if (!isIndexLikeScreen()) return;
+    ensureFab(openSummary);
+  }
+
+  // すぐ＋しつこく
+  tick();
+  setInterval(tick, 800);
+
+  // ついでにイベントでも叩く（取れればラッキー）
+  kintone.events.on(['app.record.index.show', 'mobile.app.record.index.show'], function (event) {
+    // viewName取れるなら一応絞る（取れない環境もある）
+    if (event.viewName && event.viewName !== TARGET_VIEW_NAME) return event;
+    tick();
+    return event;
+  });
 
 })();
