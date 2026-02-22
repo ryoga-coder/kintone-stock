@@ -28,7 +28,7 @@
     return event;
   });
 
-  // スマホ
+  // スマホー
   kintone.events.on([
     'mobile.app.record.create.show',
     'mobile.app.record.edit.show',
