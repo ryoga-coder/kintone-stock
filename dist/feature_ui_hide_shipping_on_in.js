@@ -17,7 +17,7 @@
     }
   }
 
-  // PC
+  // PC　
   kintone.events.on([
     'app.record.create.show',
     'app.record.edit.show',
