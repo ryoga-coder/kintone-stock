@@ -43,30 +43,10 @@
     if (box && box.parentNode) box.parentNode.removeChild(box);
   }
 
-  function getMountEl() {
-    // 1) HTMLコンテナがあるなら最優先（将来HTML入れてもコード変更不要）
-    const el = document.getElementById(MOUNT_ID);
-    if (el) return el;
-
-    // 2) HTML無しの場合：一覧ツールバー直下に差し込む（“上すぎ”を避ける）
-    //    PC
-    const pcToolbar =
-      document.querySelector('.gaia-argoui-app-index-toolbar') ||
-      document.querySelector('.gaia-argoui-app-index-view-selector')?.parentElement;
-
-    if (pcToolbar && pcToolbar.parentElement) {
-      // ツールバーの直後に差し込みたいので、親の中で次要素の前にinsert
-      const parent = pcToolbar.parentElement;
-      // 既に挿入済みのBOXがあればそれを返す
-      const existing = document.getElementById(BOX_ID);
-      if (existing) return existing;
-
-      const box = document.createElement('div');
-      box.id = BOX_ID;
-      parent.insertBefore(box, pcToolbar.nextSibling);
-      return box;
-    }
-
+ function getMountEl() {
+  // HTMLに置いたdivにしか出さない（見つからなければ何も出さない）
+  return document.getElementById('ws-ship-summary');
+}
     //    モバイル：ヘッダースペースが取れるならそこ（最後の手段）
     try {
       if (kintone.mobile?.app?.getHeaderSpaceElement) {
