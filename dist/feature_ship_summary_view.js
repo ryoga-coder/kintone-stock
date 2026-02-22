@@ -3,6 +3,8 @@
  - クリックでAPI取得→集計（event.records依存しない）
  - PC/モバイル共通：右下ボタン → モーダル
 ========================================================= */
+alert('ship-summary loaded');
+
 (function () {
   'use strict';
 
