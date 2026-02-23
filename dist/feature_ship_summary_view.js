@@ -1,12 +1,13 @@
 /* =========================================================
  Wood Stock - 出荷履歴（出荷先別サマリ）
- 本番安定版（デバッグ除去済み）
+ 本番安定版：HTML(#ws-ship-summary)優先 + ヘッダーフォールバック
 ========================================================= */
 (function () {
   'use strict';
 
-  // ===== 設定 =====
   const TARGET_VIEW_NAME = '出荷履歴';
+  const MOUNT_ID = 'ws-ship-summary';     // ← ビューHTMLに置く div
+  const ROOT_ID = 'ws-ship-root';
 
   const FC = {
     shipping_to: 'shipping_to',
@@ -17,27 +18,28 @@
   };
 
   const SHIP_VALUE = '出庫';
-  const ROOT_ID = 'ws-ship-root';
 
   // ===== appId取得 =====
   function getAppIdSafe() {
     try { const id = kintone.mobile?.app?.getId?.(); if (id) return id; } catch (e) {}
     try { const id = kintone.app?.getId?.(); if (id) return id; } catch (e) {}
-    const m = location.pathname.match(/\/k\/(\d+)\//);
-    return m ? Number(m[1]) : null;
+    try {
+      const m = location.pathname.match(/\/k\/(\d+)\//);
+      if (m && m[1]) return Number(m[1]);
+    } catch (e) {}
+    return null;
   }
 
-  // ===== mount取得 =====
+  // ===== mount取得（HTML優先）=====
   function getMountEl() {
-    try {
-      if (kintone.mobile?.app?.getHeaderSpaceElement)
-        return kintone.mobile.app.getHeaderSpaceElement();
-    } catch (e) {}
+    // 1) ビューHTMLに置いた div を最優先
+    const el = document.getElementById(MOUNT_ID);
+    if (el) return el;
 
-    try {
-      if (kintone.app?.getHeaderMenuSpaceElement)
-        return kintone.app.getHeaderMenuSpaceElement();
-    } catch (e) {}
+    // 2) フォールバック：ヘッダー
+    try { const m = kintone.mobile?.app?.getHeaderSpaceElement?.(); if (m) return m; } catch (e) {}
+    try { const p = kintone.app?.getHeaderMenuSpaceElement?.(); if (p) return p; } catch (e) {}
+    try { const p2 = kintone.app?.getHeaderSpaceElement?.(); if (p2) return p2; } catch (e) {}
 
     return null;
   }
@@ -63,7 +65,6 @@
 
   async function fetchAllRecords(appId) {
     const url = kintone.api.url('/k/v1/records.json', true);
-
     const limit = 500;
     let offset = 0;
     const all = [];
@@ -77,7 +78,6 @@
       offset += limit;
       if (offset > 50000) break;
     }
-
     return all;
   }
 
@@ -149,7 +149,7 @@
 
     return `
       <style>
-        #${ROOT_ID}.ws {background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px}
+        #${ROOT_ID}.ws {background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px;margin:10px 0}
         #${ROOT_ID} table{width:100%;border-collapse:collapse;font-size:13px}
         #${ROOT_ID} th,#${ROOT_ID} td{border:1px solid #ddd;padding:6px}
         #${ROOT_ID} th{background:#f0f0f0;text-align:left}
@@ -177,24 +177,29 @@
   }
 
   async function run(event) {
-    if (event.viewName !== TARGET_VIEW_NAME) return event;
+    // スマホで viewName が空/undefined のケース許容
+    if (event.viewName && event.viewName !== TARGET_VIEW_NAME) return event;
 
     const mount = getMountEl();
-    if (!mount) return event;
-    if (mount.querySelector('#' + ROOT_ID)) return event;
+    if (!mount) {
+      console.warn(`[ship-summary] mount not found. view HTMLに <div id="${MOUNT_ID}"></div> を置くと安定します。`);
+      return event;
+    }
+
+    // 二重描画防止
+    if (mount.querySelector && mount.querySelector('#' + ROOT_ID)) return event;
 
     mount.innerHTML = '集計中…';
 
     try {
       const appId = getAppIdSafe();
-      if (!appId) return event;
+      if (!appId) throw new Error('appId not found');
 
       const all = await fetchAllRecords(appId);
       const ship = all.filter(isShipRecord);
       const rows = buildSummary(ship);
 
       mount.innerHTML = render(rows, ship.length);
-
     } catch (e) {
       mount.innerHTML = '<div style="color:red">集計エラー</div>';
       console.error(e);
