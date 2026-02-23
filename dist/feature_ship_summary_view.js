@@ -1,6 +1,7 @@
 /* =========================================================
  Wood Stock - 出荷履歴（出荷先別サマリ）
- 在庫集計と同じ作り方（PC/モバイル対応 / appId取得強化 / mountフォールバック）
+ 在庫集計と同骨格（PC/モバイル対応 / appId取得強化 / mountフォールバック）
+ + ヘッダーを潰さない「箱方式」で描画（消されにくい）
 ========================================================= */
 (function () {
   'use strict';
@@ -8,8 +9,15 @@
   if (!window.WS_ENV?.assertKnownEnv?.()) return;
   window.WS_ENV.showDevBadge();
 
-  // ★ここは「出荷履歴（通常）」など、いま実際に使っているビュー名に合わせる
+  // ★ビュー名（必要なら変更）
   const TARGET_VIEW_NAME = '出荷履歴';
+
+  // ★在庫集計と同じ発想でまず検証するなら、同じidを使うのが確実
+  // ただし同じ画面で在庫集計も出るなら競合するので、その場合は 'ws-ship-summary' に変えてね
+  const MOUNT_ID = 'ws-summary';
+
+  const ROOT_ID = 'ws-ship-root';
+  const BOX_ID = 'ws-ship-box';
 
   const FC = {
     shipping_to: 'shipping_to',
@@ -22,11 +30,7 @@
   const SHIP_VALUE = '出庫';
   const USE_ABS_KG = true;
 
-  // ★在庫集計と同じ：HTMLに置けるならここ、なければヘッダーへ
-  const MOUNT_ID = 'ws-ship-summary';
-  const ROOT_ID = 'ws-ship-root';
-
-  // ★URLから appId を抜く（/k/181/ など）
+  // --- appId
   function getAppIdFromUrl() {
     try {
       const m = location.pathname.match(/\/k\/(\d+)\//);
@@ -35,7 +39,6 @@
     return null;
   }
 
-  // ★最強 appId 取得（mobile → pc → url）
   function getAppIdSafe() {
     try {
       if (kintone.mobile?.app?.getId) {
@@ -54,19 +57,19 @@
     return getAppIdFromUrl();
   }
 
-  // ★在庫集計と同じmount戦略
+  // --- mount (在庫集計と同様)
   function getMountEl() {
     const el = document.getElementById(MOUNT_ID);
     if (el) return el;
 
     try { if (kintone.mobile?.app?.getHeaderSpaceElement) return kintone.mobile.app.getHeaderSpaceElement(); } catch (e) {}
     try { if (kintone.app?.getHeaderMenuSpaceElement) return kintone.app.getHeaderMenuSpaceElement(); } catch (e) {}
-    // 在庫集計はここまでだけど、保険で headerSpace も見る（無害）
     try { if (kintone.app?.getHeaderSpaceElement) return kintone.app.getHeaderSpaceElement(); } catch (e) {}
 
     return null;
   }
 
+  // --- utils
   function num(v) {
     const n = Number(v || 0);
     return Number.isFinite(n) ? n : 0;
@@ -75,6 +78,15 @@
   function normalizeDate(v) {
     const s = String(v || '').slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
   }
 
   function errToText(e) {
@@ -89,11 +101,7 @@
     }
   }
 
-  /* =========================
-   全件取得（records.jsonのみ）
-   - fields指定なし
-   - queryは  order+$id+offset → offsetのみ → limitのみ
-  ========================= */
+  // --- fetchAllRecords（在庫集計のコピー）
   async function fetchAllRecords(appId) {
     const recordsUrl = kintone.api.url('/k/v1/records.json', true);
 
@@ -160,7 +168,7 @@
     return r.records;
   }
 
-  // 出庫レコードっぽいか最低限（operation/ kgが数値）
+  // --- ship summary
   function isShipRecord(r) {
     if ((r?.[FC.operation]?.value || '') !== SHIP_VALUE) return false;
     const v = r?.[FC.kg]?.value;
@@ -168,7 +176,6 @@
     return Number.isFinite(Number(v));
   }
 
-  // 出荷先別集計（lastDateは最大日付）
   function buildShipSummary(records) {
     const map = new Map();
 
@@ -207,20 +214,10 @@
     }));
 
     rows.sort((a, b) => b.total - a.total);
-
     const sum = rows.reduce((acc, r) => acc + (Number(r.total) || 0), 0);
     rows.push({ dest: '合計', total: sum, lastDate: '', lastQty: '', lastSpecies: '' });
 
     return rows;
-  }
-
-  function escapeHtml(s) {
-    return String(s ?? '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
   }
 
   function render(rows, count) {
@@ -266,60 +263,41 @@
     `;
   }
 
-  async function run(event) {
-  if (event.viewName !== TARGET_VIEW_NAME) return event;
-
-  const mount = getMountEl();
-  if (!mount) return event;
-
-  // ★ mountを潰さない：自分の箱だけ作る
-  let box = mount.querySelector('#ws-ship-box');
-  if (!box) {
+  function ensureBox(mount) {
+    let box = mount.querySelector('#' + BOX_ID);
+    if (box) return box;
     box = document.createElement('div');
-    box.id = 'ws-ship-box';
+    box.id = BOX_ID;
     box.style.margin = '10px 0';
     mount.appendChild(box);
+    return box;
   }
 
-  // 二重描画防止は box内で判定
-  if (box.querySelector && box.querySelector('#' + ROOT_ID)) return event;
+  async function run(event) {
+    // viewNameが取れない端末があるので、空なら通す（在庫集計より強い）
+    if (event.viewName && event.viewName !== TARGET_VIEW_NAME) return event;
 
-  box.textContent = '集計中…';
+    const mount = getMountEl();
+    if (!mount) return event;
 
-  try {
-    const appId = getAppIdSafe();
-    const all = await fetchAllRecords(appId);
-    const ship = (all || []).filter(isShipRecord);
+    const box = ensureBox(mount);
 
-    const rows = buildShipSummary(ship);
-    box.innerHTML = render(rows, ship.length);
-  } catch (e) {
-    box.innerHTML = `<div style="color:red">集計エラー<br><pre>${escapeHtml(errToText(e))}</pre></div>`;
-    console.error(e);
-  }
+    // 二重描画防止
+    if (box.querySelector && box.querySelector('#' + ROOT_ID)) return event;
 
-  return event;
-}
-
-    // 在庫集計と同じ：rootがあれば二重描画しない
-    if (mount.querySelector && mount.querySelector('#' + ROOT_ID)) return event;
-
-    mount.innerHTML = '集計中…';
+    box.textContent = '集計中…';
 
     try {
       const appId = getAppIdSafe();
-      if (!appId) {
-        throw { code: 'APP_ID_EMPTY', message: 'appId が取得できません（URLや画面コンテキストを確認してください）' };
-      }
+      if (!appId) throw { code: 'APP_ID_EMPTY', message: 'appId が取得できません' };
 
       const all = await fetchAllRecords(appId);
       const ship = (all || []).filter(isShipRecord);
 
       const rows = buildShipSummary(ship);
-      mount.innerHTML = render(rows, ship.length);
-
+      box.innerHTML = render(rows, ship.length);
     } catch (e) {
-      mount.innerHTML = `<div style="color:red">集計エラー<br><pre>${escapeHtml(errToText(e))}</pre></div>`;
+      box.innerHTML = `<div style="color:red">集計エラー<br><pre>${escapeHtml(errToText(e))}</pre></div>`;
       console.error(e);
     }
 
