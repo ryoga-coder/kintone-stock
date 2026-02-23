@@ -5,17 +5,7 @@
 (function () {
   'use strict';
 
-  console.log('[ship] LOADED on', location.href, 'mobile?', !!kintone.mobile);
-
-if (!window.WS_ENV?.assertKnownEnv?.()) {
-  // WS_ENVが無い/判定NGでも、とにかく画面に印を出す（デバッグ用）
-  const mark = document.createElement('div');
-  mark.textContent = 'ship-summary: WS_ENV missing or env unknown';
-  mark.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999999;background:#ff0;padding:6px;font-size:12px;';
-  document.body.appendChild(mark);
-  return;
-}
-
+if (!window.WS_ENV?.assertKnownEnv?.()) return;
   const TARGET_VIEW_NAME = '出荷履歴';
 
   const ROOT_ID = 'ws-ship-root';
@@ -64,7 +54,7 @@ if (!window.WS_ENV?.assertKnownEnv?.()) {
     } catch (e) {}
 
     // 最終手段：body直下（デバッグ用）
-    return document.body;
+    return null;
   }
 
   function num(v) {
@@ -224,17 +214,13 @@ if (!window.WS_ENV?.assertKnownEnv?.()) {
     box.id = BOX_ID;
 
     // 見えない問題を潰すため、強制的に可視化
-    box.style.cssText = 'display:block; padding:10px; margin:10px 0; background:rgba(255,0,0,.06);';
+    box.style.cssText = 'display:block;';
     mount.appendChild(box);
 
     return box;
   }
 
-  function debugCheck(label) {
-    const box = document.getElementById(BOX_ID);
-    const root = document.getElementById(ROOT_ID);
-    console.log(`[ship][${label}] box?`, !!box, 'root?', !!root, 'boxRect=', box?.getBoundingClientRect?.());
-  }
+  
 
   async function run(event) {
     // スマホでviewNameが空になるケース対策
@@ -243,9 +229,7 @@ if (!window.WS_ENV?.assertKnownEnv?.()) {
     const mount = getMountEl();
     const box = ensureBox(mount);
 
-    box.textContent = '集計中…（赤枠が出れば描画は生きてる）';
 
-    debugCheck('before');
 
     try {
       const appId = getAppIdSafe();
@@ -255,22 +239,10 @@ if (!window.WS_ENV?.assertKnownEnv?.()) {
 
       box.innerHTML = render(rows, ship.length);
 
-      debugCheck('after-0');
-
-      // 消されるならここで検出できる
-      setTimeout(() => {
-        debugCheck('after-300ms');
-        // 消されてたら、強制避難（画面上部に固定）
-        if (!document.getElementById(ROOT_ID)) {
-          const rescue = document.createElement('div');
-          rescue.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:999999;background:#fff;max-height:55vh;overflow:auto;border-bottom:3px solid red;';
-          rescue.innerHTML = box.innerHTML || '<div style="padding:8px">rescue empty</div>';
-          document.body.appendChild(rescue);
           console.warn('[ship] root was removed. rescued to fixed top.');
         }
       }, 300);
 
-      setTimeout(() => debugCheck('after-1500ms'), 1500);
 
     } catch (e) {
       box.innerHTML = `<div style="color:red">集計エラー<br><pre>${escapeHtml(errToText(e))}</pre></div>`;
