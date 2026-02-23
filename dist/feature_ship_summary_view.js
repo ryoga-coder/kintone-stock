@@ -8,6 +8,8 @@ alert('ship-summary loaded');
 (function () {
   'use strict';
 
+ console.log('[ship-summary] FILE LOADED', location.href);
+
   // ★ここがスマホで false になってる可能性があるので、まずは“通す”
   // if (!window.WS_ENV?.assertKnownEnv?.()) return;
   // window.WS_ENV.showDevBadge();
