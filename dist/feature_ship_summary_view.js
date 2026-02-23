@@ -1,7 +1,6 @@
 /* =========================================================
  Wood Stock - 出荷履歴（出荷先別サマリ）
- 在庫集計と同骨格（PC/モバイル対応 / appId取得強化 / mountフォールバック）
- + ヘッダーを潰さない「箱方式」で描画（消されにくい）
+ デバッグ強化版：スマホで「描画後に消える」問題の切り分け用
 ========================================================= */
 (function () {
   'use strict';
@@ -9,12 +8,7 @@
   if (!window.WS_ENV?.assertKnownEnv?.()) return;
   window.WS_ENV.showDevBadge();
 
-  // ★ビュー名（必要なら変更）
   const TARGET_VIEW_NAME = '出荷履歴';
-
-  // ★在庫集計と同じ発想でまず検証するなら、同じidを使うのが確実
-  // ただし同じ画面で在庫集計も出るなら競合するので、その場合は 'ws-ship-summary' に変えてね
-  const MOUNT_ID = 'ws-summary';
 
   const ROOT_ID = 'ws-ship-root';
   const BOX_ID = 'ws-ship-box';
@@ -30,7 +24,6 @@
   const SHIP_VALUE = '出庫';
   const USE_ABS_KG = true;
 
-  // --- appId
   function getAppIdFromUrl() {
     try {
       const m = location.pathname.match(/\/k\/(\d+)\//);
@@ -40,41 +33,36 @@
   }
 
   function getAppIdSafe() {
-    try {
-      if (kintone.mobile?.app?.getId) {
-        const id = kintone.mobile.app.getId();
-        if (id) return id;
-      }
-    } catch (e) {}
-
-    try {
-      if (kintone.app?.getId) {
-        const id = kintone.app.getId();
-        if (id) return id;
-      }
-    } catch (e) {}
-
+    try { const id = kintone.mobile?.app?.getId?.(); if (id) return id; } catch (e) {}
+    try { const id = kintone.app?.getId?.(); if (id) return id; } catch (e) {}
     return getAppIdFromUrl();
   }
 
-  // --- mount (在庫集計と同様)
+  // 在庫集計と同等：mount候補を広めに取る（スマホはheaderSpaceが0高さになることがある）
   function getMountEl() {
-    const el = document.getElementById(MOUNT_ID);
-    if (el) return el;
+    try {
+      const m = kintone.mobile?.app?.getHeaderSpaceElement?.();
+      if (m) return m;
+    } catch (e) {}
 
-    try { if (kintone.mobile?.app?.getHeaderSpaceElement) return kintone.mobile.app.getHeaderSpaceElement(); } catch (e) {}
-    try { if (kintone.app?.getHeaderMenuSpaceElement) return kintone.app.getHeaderMenuSpaceElement(); } catch (e) {}
-    try { if (kintone.app?.getHeaderSpaceElement) return kintone.app.getHeaderSpaceElement(); } catch (e) {}
+    try {
+      const p = kintone.app?.getHeaderMenuSpaceElement?.();
+      if (p) return p;
+    } catch (e) {}
 
-    return null;
+    try {
+      const p2 = kintone.app?.getHeaderSpaceElement?.();
+      if (p2) return p2;
+    } catch (e) {}
+
+    // 最終手段：body直下（デバッグ用）
+    return document.body;
   }
 
-  // --- utils
   function num(v) {
     const n = Number(v || 0);
     return Number.isFinite(n) ? n : 0;
   }
-
   function normalizeDate(v) {
     const s = String(v || '').slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
@@ -101,7 +89,6 @@
     }
   }
 
-  // --- fetchAllRecords（在庫集計のコピー）
   async function fetchAllRecords(appId) {
     const recordsUrl = kintone.api.url('/k/v1/records.json', true);
 
@@ -113,62 +100,20 @@
       return await kintone.api(recordsUrl, 'GET', { app: appId, query });
     }
 
-    async function fetchWithOffsetOrdered() {
-      offset = 0; out.length = 0;
-      while (true) {
-        const q = `order by $id asc limit ${limit} offset ${offset}`;
-        const res = await get(q);
-        const chunk = res.records || [];
-        out.push(...chunk);
-        if (chunk.length < limit) break;
-        offset += limit;
-        if (offset > 50000) break;
-      }
-      return { mode: 'order+$id+offset', records: out };
-    }
-
-    async function fetchWithOffsetNoOrder() {
-      offset = 0; out.length = 0;
-      while (true) {
-        const q = `limit ${limit} offset ${offset}`;
-        const res = await get(q);
-        const chunk = res.records || [];
-        out.push(...chunk);
-        if (chunk.length < limit) break;
-        offset += limit;
-        if (offset > 50000) break;
-      }
-      return { mode: 'offset-only', records: out };
-    }
-
-    async function fetchLimitOnly() {
-      const q = `limit ${limit}`;
+    while (true) {
+      const q = `order by $id asc limit ${limit} offset ${offset}`;
       const res = await get(q);
-      return { mode: 'limit-only(500)', records: (res.records || []) };
+      const chunk = res.records || [];
+      out.push(...chunk);
+      if (chunk.length < limit) break;
+      offset += limit;
+      if (offset > 50000) break;
     }
 
-    try {
-      const r = await fetchWithOffsetOrdered();
-      console.log('[fetchAllRecords] using mode:', r.mode);
-      return r.records;
-    } catch (e1) {
-      console.warn('[fetchAllRecords] ordered failed:', errToText(e1));
-    }
-
-    try {
-      const r = await fetchWithOffsetNoOrder();
-      console.log('[fetchAllRecords] using mode:', r.mode);
-      return r.records;
-    } catch (e2) {
-      console.warn('[fetchAllRecords] offset-only failed:', errToText(e2));
-    }
-
-    const r = await fetchLimitOnly();
-    console.log('[fetchAllRecords] using mode:', r.mode);
-    return r.records;
+    console.log('[ship] fetchAllRecords done:', out.length);
+    return out;
   }
 
-  // --- ship summary
   function isShipRecord(r) {
     if ((r?.[FC.operation]?.value || '') !== SHIP_VALUE) return false;
     const v = r?.[FC.kg]?.value;
@@ -236,7 +181,7 @@
 
     return `
       <style>
-        #${ROOT_ID}.ws{background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px}
+        #${ROOT_ID}.ws{background:#fff;border:3px solid red;border-radius:10px;padding:10px}
         #${ROOT_ID} h3{margin:0 0 8px}
         #${ROOT_ID} .note{font-size:12px;color:#666;margin:6px 0 0}
         #${ROOT_ID} table{width:100%;border-collapse:collapse;font-size:13px}
@@ -266,36 +211,59 @@
   function ensureBox(mount) {
     let box = mount.querySelector('#' + BOX_ID);
     if (box) return box;
+
     box = document.createElement('div');
     box.id = BOX_ID;
-    box.style.margin = '10px 0';
+
+    // 見えない問題を潰すため、強制的に可視化
+    box.style.cssText = 'display:block; padding:10px; margin:10px 0; background:rgba(255,0,0,.06);';
     mount.appendChild(box);
+
     return box;
   }
 
+  function debugCheck(label) {
+    const box = document.getElementById(BOX_ID);
+    const root = document.getElementById(ROOT_ID);
+    console.log(`[ship][${label}] box?`, !!box, 'root?', !!root, 'boxRect=', box?.getBoundingClientRect?.());
+  }
+
   async function run(event) {
-    // viewNameが取れない端末があるので、空なら通す（在庫集計より強い）
+    // スマホでviewNameが空になるケース対策
     if (event.viewName && event.viewName !== TARGET_VIEW_NAME) return event;
 
     const mount = getMountEl();
-    if (!mount) return event;
-
     const box = ensureBox(mount);
 
-    // 二重描画防止
-    if (box.querySelector && box.querySelector('#' + ROOT_ID)) return event;
+    box.textContent = '集計中…（赤枠が出れば描画は生きてる）';
 
-    box.textContent = '集計中…';
+    debugCheck('before');
 
     try {
       const appId = getAppIdSafe();
-      if (!appId) throw { code: 'APP_ID_EMPTY', message: 'appId が取得できません' };
-
       const all = await fetchAllRecords(appId);
       const ship = (all || []).filter(isShipRecord);
-
       const rows = buildShipSummary(ship);
+
       box.innerHTML = render(rows, ship.length);
+
+      debugCheck('after-0');
+
+      // 消されるならここで検出できる
+      setTimeout(() => {
+        debugCheck('after-300ms');
+        // 消されてたら、強制避難（画面上部に固定）
+        if (!document.getElementById(ROOT_ID)) {
+          const rescue = document.createElement('div');
+          rescue.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:999999;background:#fff;max-height:55vh;overflow:auto;border-bottom:3px solid red;';
+          rescue.innerHTML = box.innerHTML || '<div style="padding:8px">rescue empty</div>';
+          document.body.appendChild(rescue);
+          console.warn('[ship] root was removed. rescued to fixed top.');
+        }
+      }, 300);
+
+      setTimeout(() => debugCheck('after-1500ms'), 1500);
+
     } catch (e) {
       box.innerHTML = `<div style="color:red">集計エラー<br><pre>${escapeHtml(errToText(e))}</pre></div>`;
       console.error(e);
