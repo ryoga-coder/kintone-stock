@@ -1,11 +1,6 @@
 /* =========================================================
- Wood Stock - 出荷履歴ビュー：出荷状況（出荷先別）サマリ
- - 在庫集計と同じ方式：
-   1) #ws-ship-summary があればそこだけに描画
-   2) 無ければ モバイル headerSpace → PC headerMenuSpace/headerSpace に描画
- - PC/モバイル対応
- - 集計は「この一覧の表示分」（event.records）
- - lastDate は最大日付方式（並び順に依存しない）
+ Wood Stock - 出荷履歴（出荷先別サマリ）
+ 在庫集計と同じ作り方（PC/モバイル対応 / appId取得強化 / mountフォールバック）
 ========================================================= */
 (function () {
   'use strict';
@@ -13,6 +8,7 @@
   if (!window.WS_ENV?.assertKnownEnv?.()) return;
   window.WS_ENV.showDevBadge();
 
+  // ★ここは「出荷履歴（通常）」など、いま実際に使っているビュー名に合わせる
   const TARGET_VIEW_NAME = '出荷履歴';
 
   const FC = {
@@ -26,11 +22,50 @@
   const SHIP_VALUE = '出庫';
   const USE_ABS_KG = true;
 
-  // 任意：カスタムビューHTMLに置くならこれ
+  // ★在庫集計と同じ：HTMLに置けるならここ、なければヘッダーへ
   const MOUNT_ID = 'ws-ship-summary';
+  const ROOT_ID = 'ws-ship-root';
 
-  // ヘッダー等に差し込む時の内部root（重複描画防止）
-  const ROOT_ID = 'ws-ship-summary-root';
+  // ★URLから appId を抜く（/k/181/ など）
+  function getAppIdFromUrl() {
+    try {
+      const m = location.pathname.match(/\/k\/(\d+)\//);
+      if (m && m[1]) return Number(m[1]);
+    } catch (e) {}
+    return null;
+  }
+
+  // ★最強 appId 取得（mobile → pc → url）
+  function getAppIdSafe() {
+    try {
+      if (kintone.mobile?.app?.getId) {
+        const id = kintone.mobile.app.getId();
+        if (id) return id;
+      }
+    } catch (e) {}
+
+    try {
+      if (kintone.app?.getId) {
+        const id = kintone.app.getId();
+        if (id) return id;
+      }
+    } catch (e) {}
+
+    return getAppIdFromUrl();
+  }
+
+  // ★在庫集計と同じmount戦略
+  function getMountEl() {
+    const el = document.getElementById(MOUNT_ID);
+    if (el) return el;
+
+    try { if (kintone.mobile?.app?.getHeaderSpaceElement) return kintone.mobile.app.getHeaderSpaceElement(); } catch (e) {}
+    try { if (kintone.app?.getHeaderMenuSpaceElement) return kintone.app.getHeaderMenuSpaceElement(); } catch (e) {}
+    // 在庫集計はここまでだけど、保険で headerSpace も見る（無害）
+    try { if (kintone.app?.getHeaderSpaceElement) return kintone.app.getHeaderSpaceElement(); } catch (e) {}
+
+    return null;
+  }
 
   function num(v) {
     const n = Number(v || 0);
@@ -42,37 +77,99 @@
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
   }
 
-  function getMountElLikeStockSummary() {
-    // 1) カスタムビューHTMLの mount があるなら最優先
-    const el = document.getElementById(MOUNT_ID);
-    if (el) return el;
-
-    // 2) 在庫集計と同じ fallback
+  function errToText(e) {
     try {
-      if (kintone.mobile?.app?.getHeaderSpaceElement) {
-        const m = kintone.mobile.app.getHeaderSpaceElement();
-        if (m) return m;
-      }
-    } catch (e) {}
-
-    try {
-      if (kintone.app?.getHeaderMenuSpaceElement) {
-        const p = kintone.app.getHeaderMenuSpaceElement();
-        if (p) return p;
-      }
-    } catch (e) {}
-
-    try {
-      if (kintone.app?.getHeaderSpaceElement) {
-        const p2 = kintone.app.getHeaderSpaceElement();
-        if (p2) return p2;
-      }
-    } catch (e) {}
-
-    return null;
+      const obj = (typeof e === 'object' && e !== null) ? e : { message: String(e) };
+      const code = obj.code || '';
+      const msg = obj.message || obj.error || obj.toString();
+      const errs = obj.errors ? JSON.stringify(obj.errors, null, 2) : '';
+      return `[${code}] ${msg}\n${errs}`;
+    } catch (ex) {
+      return String(e);
+    }
   }
 
-  function aggregate(records) {
+  /* =========================
+   全件取得（records.jsonのみ）
+   - fields指定なし
+   - queryは  order+$id+offset → offsetのみ → limitのみ
+  ========================= */
+  async function fetchAllRecords(appId) {
+    const recordsUrl = kintone.api.url('/k/v1/records.json', true);
+
+    const limit = 500;
+    let offset = 0;
+    const out = [];
+
+    async function get(query) {
+      return await kintone.api(recordsUrl, 'GET', { app: appId, query });
+    }
+
+    async function fetchWithOffsetOrdered() {
+      offset = 0; out.length = 0;
+      while (true) {
+        const q = `order by $id asc limit ${limit} offset ${offset}`;
+        const res = await get(q);
+        const chunk = res.records || [];
+        out.push(...chunk);
+        if (chunk.length < limit) break;
+        offset += limit;
+        if (offset > 50000) break;
+      }
+      return { mode: 'order+$id+offset', records: out };
+    }
+
+    async function fetchWithOffsetNoOrder() {
+      offset = 0; out.length = 0;
+      while (true) {
+        const q = `limit ${limit} offset ${offset}`;
+        const res = await get(q);
+        const chunk = res.records || [];
+        out.push(...chunk);
+        if (chunk.length < limit) break;
+        offset += limit;
+        if (offset > 50000) break;
+      }
+      return { mode: 'offset-only', records: out };
+    }
+
+    async function fetchLimitOnly() {
+      const q = `limit ${limit}`;
+      const res = await get(q);
+      return { mode: 'limit-only(500)', records: (res.records || []) };
+    }
+
+    try {
+      const r = await fetchWithOffsetOrdered();
+      console.log('[fetchAllRecords] using mode:', r.mode);
+      return r.records;
+    } catch (e1) {
+      console.warn('[fetchAllRecords] ordered failed:', errToText(e1));
+    }
+
+    try {
+      const r = await fetchWithOffsetNoOrder();
+      console.log('[fetchAllRecords] using mode:', r.mode);
+      return r.records;
+    } catch (e2) {
+      console.warn('[fetchAllRecords] offset-only failed:', errToText(e2));
+    }
+
+    const r = await fetchLimitOnly();
+    console.log('[fetchAllRecords] using mode:', r.mode);
+    return r.records;
+  }
+
+  // 出庫レコードっぽいか最低限（operation/ kgが数値）
+  function isShipRecord(r) {
+    if ((r?.[FC.operation]?.value || '') !== SHIP_VALUE) return false;
+    const v = r?.[FC.kg]?.value;
+    if (v === '' || v === null || typeof v === 'undefined') return false;
+    return Number.isFinite(Number(v));
+  }
+
+  // 出荷先別集計（lastDateは最大日付）
+  function buildShipSummary(records) {
     const map = new Map();
 
     for (const r of records) {
@@ -83,18 +180,11 @@
       const sp = (r?.[FC.species]?.value ?? '').trim();
 
       if (!map.has(dest)) {
-        map.set(dest, {
-          dest,
-          total: 0,
-          lastDate: '',
-          lastQty: 0,
-          lastSpeciesSet: new Set(),
-        });
+        map.set(dest, { dest, total: 0, lastDate: '', lastQty: 0, lastSpeciesSet: new Set() });
       }
       const row = map.get(dest);
       row.total += kg;
 
-      // lastDate: 最大日付
       if (date) {
         if (!row.lastDate || date > row.lastDate) {
           row.lastDate = date;
@@ -137,11 +227,11 @@
     const body = rows.map(r => {
       const isSum = (r.dest === '合計');
       return `
-        <tr class="${isSum ? 'wsSum' : ''}">
+        <tr class="${isSum ? 'sum' : ''}">
           <td>${escapeHtml(r.dest)}</td>
-          <td class="wsR">${escapeHtml(r.total)}</td>
+          <td class="r">${escapeHtml(r.total)}</td>
           <td>${escapeHtml(r.lastDate || '')}</td>
-          <td class="wsR">${escapeHtml(r.lastQty === '' ? '' : r.lastQty)}</td>
+          <td class="r">${escapeHtml(r.lastQty === '' ? '' : r.lastQty)}</td>
           <td>${escapeHtml(r.lastSpecies || '')}</td>
         </tr>
       `;
@@ -149,78 +239,59 @@
 
     return `
       <style>
-        #${ROOT_ID}.wsShipWrap{background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px;margin:10px 0}
-        #${ROOT_ID} .wsShipHead{display:flex;align-items:baseline;gap:12px;margin:2px 0 10px;flex-wrap:wrap}
-        #${ROOT_ID} .wsShipTitle{font-weight:700;font-size:14px}
-        #${ROOT_ID} .wsShipNote{font-size:12px;color:#666}
-        #${ROOT_ID} .wsShipTable{width:100%;border-collapse:collapse;font-size:13px}
-        #${ROOT_ID} .wsShipTable th,#${ROOT_ID} .wsShipTable td{border:1px solid #ddd;padding:6px}
-        #${ROOT_ID} .wsShipTable th{background:#f0f0f0;text-align:left}
-        #${ROOT_ID} .wsR{text-align:right}
-        #${ROOT_ID} .wsSum{background:#f7f9ff;font-weight:700}
+        #${ROOT_ID}.ws{background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px}
+        #${ROOT_ID} h3{margin:0 0 8px}
+        #${ROOT_ID} .note{font-size:12px;color:#666;margin:6px 0 0}
+        #${ROOT_ID} table{width:100%;border-collapse:collapse;font-size:13px}
+        #${ROOT_ID} th,#${ROOT_ID} td{border:1px solid #ddd;padding:6px}
+        #${ROOT_ID} th{background:#f0f0f0;text-align:left}
+        #${ROOT_ID} .r{text-align:right}
+        #${ROOT_ID} .sum{background:#f7f9ff;font-weight:700}
       </style>
 
-      <div id="${ROOT_ID}" class="wsShipWrap">
-        <div class="wsShipHead">
-          <div class="wsShipTitle">出荷状況（出荷先別）</div>
-          <div class="wsShipNote">※この一覧の表示分で集計（${count}件）</div>
-        </div>
-
-        <table class="wsShipTable">
-          <thead>
-            <tr>
-              <th>出荷先一覧</th>
-              <th class="wsR">累計</th>
-              <th>直近の出荷日</th>
-              <th class="wsR">直近の出荷量</th>
-              <th>出荷樹種</th>
-            </tr>
-          </thead>
-          <tbody>${body}</tbody>
+      <div class="ws" id="${ROOT_ID}">
+        <h3>出荷状況（出荷先別）</h3>
+        <div class="note">※出庫レコードで集計（${count}件）</div>
+        <table>
+          <tr>
+            <th>出荷先一覧</th>
+            <th class="r">累計</th>
+            <th>直近の出荷日</th>
+            <th class="r">直近の出荷量</th>
+            <th>出荷樹種</th>
+          </tr>
+          ${body}
         </table>
       </div>
     `;
   }
 
-  function clearRendered(mount) {
-    // header等に差し込んだrootだけ消す（他UIを壊さない）
-    try {
-      const root = mount?.querySelector?.('#' + ROOT_ID);
-      if (root) root.remove();
-    } catch (e) {}
-  }
+  async function run(event) {
+    if (event.viewName !== TARGET_VIEW_NAME) return event;
 
-  function run(event) {
-    // ビュー名が取れないケースもあるので、ここは “一致した時だけ描画” にする
-    if (event.viewName !== TARGET_VIEW_NAME) {
-      // 他ビューに移動したとき、ヘッダーに残り続けるのが嫌なら消す
-      const m = getMountElLikeStockSummary();
-      if (m) clearRendered(m);
-      return event;
-    }
-
-    const mount = getMountElLikeStockSummary();
+    const mount = getMountEl();
     if (!mount) return event;
 
-    // 重複描画防止（既にあるなら更新）
-    clearRendered(mount);
+    // 在庫集計と同じ：rootがあれば二重描画しない
+    if (mount.querySelector && mount.querySelector('#' + ROOT_ID)) return event;
 
-    const all = Array.isArray(event.records) ? event.records : [];
-    const shipRecords = all.filter(r => (r?.[FC.operation]?.value === SHIP_VALUE));
-    const rows = aggregate(shipRecords);
+    mount.innerHTML = '集計中…';
 
-    // mount が #ws-ship-summary 自体なら “そこを丸ごと置き換え”
-    // header領域なら “追記” でもいいが、ここは一貫して innerHTML追加でなく root挿入にする
-    const html = render(rows, shipRecords.length);
+    try {
+      const appId = getAppIdSafe();
+      if (!appId) {
+        throw { code: 'APP_ID_EMPTY', message: 'appId が取得できません（URLや画面コンテキストを確認してください）' };
+      }
 
-    // mountがdivだろうがheaderだろうが、ここでは「rootを追加」する
-    const wrapper = document.createElement('div');
-    wrapper.innerHTML = html;
-    const root = wrapper.firstElementChild; // styleタグが先に来るので注意
+      const all = await fetchAllRecords(appId);
+      const ship = (all || []).filter(isShipRecord);
 
-    // style + root を両方入れたいので、wrapper の子を全部append
-    while (wrapper.firstChild) {
-      mount.appendChild(wrapper.firstChild);
+      const rows = buildShipSummary(ship);
+      mount.innerHTML = render(rows, ship.length);
+
+    } catch (e) {
+      mount.innerHTML = `<div style="color:red">集計エラー<br><pre>${escapeHtml(errToText(e))}</pre></div>`;
+      console.error(e);
     }
 
     return event;
