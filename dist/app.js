@@ -339,6 +339,49 @@
     }
   });
 
+  /* =========================================================
+ 出荷先 表示制御（入庫時は非表示）
+========================================================= */
+(function () {
+  'use strict';
+
+  const FC = {
+    op: 'operation',
+    shipTo: 'shipping_to'
+  };
+
+  function applyVisibility(record, isMobile) {
+    const op = record[FC.op]?.value;
+    const showshipping_to = (op === '出庫');
+
+    if (isMobile) {
+      kintone.mobile.app.record.setFieldShown(FC.shipTo, showshipping_to);
+    } else {
+      kintone.app.record.setFieldShown(FC.shipTo, showshipping_to);
+    }
+  }
+
+  kintone.events.on([
+    'app.record.create.show',
+    'app.record.edit.show',
+    'app.record.create.change.' + FC.op,
+    'app.record.edit.change.' + FC.op
+  ], function (event) {
+    applyVisibility(event.record, false);
+    return event;
+  });
+
+  kintone.events.on([
+    'mobile.app.record.create.show',
+    'mobile.app.record.edit.show',
+    'mobile.app.record.create.change.' + FC.op,
+    'mobile.app.record.edit.change.' + FC.op
+  ], function (event) {
+    applyVisibility(event.record, true);
+    return event;
+  });
+
+})();
 })();
 
 /* =========================================================
