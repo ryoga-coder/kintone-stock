@@ -1,8 +1,10 @@
 /* =========================================================
- Wood Stock - 出荷履歴（通常一覧ビュー）出荷状況（出荷先別）サマリ
+ Wood Stock - 出荷履歴ビュー：出荷状況（出荷先別）サマリ
+ - 在庫集計と同じ方式：
+   1) #ws-ship-summary があればそこだけに描画
+   2) 無ければ モバイル headerSpace → PC headerMenuSpace/headerSpace に描画
  - PC/モバイル対応
  - 集計は「この一覧の表示分」（event.records）
- - 表は常時表示しない：右下ボタン → モーダル
  - lastDate は最大日付方式（並び順に依存しない）
 ========================================================= */
 (function () {
@@ -11,7 +13,6 @@
   if (!window.WS_ENV?.assertKnownEnv?.()) return;
   window.WS_ENV.showDevBadge();
 
-  // ★ここを「通常一覧で作ったビュー名」に合わせて変更
   const TARGET_VIEW_NAME = '出荷履歴';
 
   const FC = {
@@ -25,16 +26,50 @@
   const SHIP_VALUE = '出庫';
   const USE_ABS_KG = true;
 
-  const FAB_ID = 'ws-ship-summary-fab';
-  const MODAL_ID = 'ws-ship-summary-modal';
+  // 任意：カスタムビューHTMLに置くならこれ
+  const MOUNT_ID = 'ws-ship-summary';
+
+  // ヘッダー等に差し込む時の内部root（重複描画防止）
+  const ROOT_ID = 'ws-ship-summary-root';
 
   function num(v) {
     const n = Number(v || 0);
     return Number.isFinite(n) ? n : 0;
   }
+
   function normalizeDate(v) {
     const s = String(v || '').slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+  }
+
+  function getMountElLikeStockSummary() {
+    // 1) カスタムビューHTMLの mount があるなら最優先
+    const el = document.getElementById(MOUNT_ID);
+    if (el) return el;
+
+    // 2) 在庫集計と同じ fallback
+    try {
+      if (kintone.mobile?.app?.getHeaderSpaceElement) {
+        const m = kintone.mobile.app.getHeaderSpaceElement();
+        if (m) return m;
+      }
+    } catch (e) {}
+
+    try {
+      if (kintone.app?.getHeaderMenuSpaceElement) {
+        const p = kintone.app.getHeaderMenuSpaceElement();
+        if (p) return p;
+      }
+    } catch (e) {}
+
+    try {
+      if (kintone.app?.getHeaderSpaceElement) {
+        const p2 = kintone.app.getHeaderSpaceElement();
+        if (p2) return p2;
+      }
+    } catch (e) {}
+
+    return null;
   }
 
   function aggregate(records) {
@@ -56,11 +91,10 @@
           lastSpeciesSet: new Set(),
         });
       }
-
       const row = map.get(dest);
       row.total += kg;
 
-      // lastDate = 最大日付（並び順に依存しない）
+      // lastDate: 最大日付
       if (date) {
         if (!row.lastDate || date > row.lastDate) {
           row.lastDate = date;
@@ -115,18 +149,18 @@
 
     return `
       <style>
-        .wsShipWrap{background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px;margin:0}
-        .wsShipHead{display:flex;align-items:baseline;gap:12px;margin:2px 0 10px;flex-wrap:wrap}
-        .wsShipTitle{font-weight:700;font-size:14px}
-        .wsShipNote{font-size:12px;color:#666}
-        .wsShipTable{width:100%;border-collapse:collapse;font-size:13px}
-        .wsShipTable th,.wsShipTable td{border:1px solid #ddd;padding:6px}
-        .wsShipTable th{background:#f0f0f0;text-align:left}
-        .wsR{text-align:right}
-        .wsSum{background:#f7f9ff;font-weight:700}
+        #${ROOT_ID}.wsShipWrap{background:#fff;border:1px solid #ddd;border-radius:10px;padding:10px;margin:10px 0}
+        #${ROOT_ID} .wsShipHead{display:flex;align-items:baseline;gap:12px;margin:2px 0 10px;flex-wrap:wrap}
+        #${ROOT_ID} .wsShipTitle{font-weight:700;font-size:14px}
+        #${ROOT_ID} .wsShipNote{font-size:12px;color:#666}
+        #${ROOT_ID} .wsShipTable{width:100%;border-collapse:collapse;font-size:13px}
+        #${ROOT_ID} .wsShipTable th,#${ROOT_ID} .wsShipTable td{border:1px solid #ddd;padding:6px}
+        #${ROOT_ID} .wsShipTable th{background:#f0f0f0;text-align:left}
+        #${ROOT_ID} .wsR{text-align:right}
+        #${ROOT_ID} .wsSum{background:#f7f9ff;font-weight:700}
       </style>
 
-      <div class="wsShipWrap">
+      <div id="${ROOT_ID}" class="wsShipWrap">
         <div class="wsShipHead">
           <div class="wsShipTitle">出荷状況（出荷先別）</div>
           <div class="wsShipNote">※この一覧の表示分で集計（${count}件）</div>
@@ -148,136 +182,46 @@
     `;
   }
 
-  // ===== モーダル =====
-  function ensureModal() {
-    let modal = document.getElementById(MODAL_ID);
-    if (modal) return modal;
-
-    modal = document.createElement('div');
-    modal.id = MODAL_ID;
-    modal.style.cssText = [
-      'position:fixed',
-      'inset:0',
-      'background:rgba(0,0,0,.45)',
-      'display:none',
-      'z-index:99999'
-    ].join(';');
-
-    modal.innerHTML = `
-      <div style="
-        position:absolute;
-        inset: 6vh 4vw;
-        background:#fff;
-        border-radius:12px;
-        box-shadow:0 10px 30px rgba(0,0,0,.25);
-        display:flex;
-        flex-direction:column;
-        overflow:hidden;
-      ">
-        <div style="
-          padding:12px 14px;
-          border-bottom:1px solid #e5e5e5;
-          display:flex;
-          justify-content:space-between;
-          align-items:center;
-          gap:10px;
-        ">
-          <div style="font-weight:700;">出荷状況（出荷先別）</div>
-          <button type="button" id="ws-ship-summary-close" style="
-            padding:8px 10px;
-            border:1px solid #ccc;
-            border-radius:10px;
-            background:#fff;
-            cursor:pointer;
-          ">閉じる</button>
-        </div>
-
-        <div id="ws-ship-summary-body" style="
-          padding:12px 14px;
-          overflow:auto;
-          -webkit-overflow-scrolling:touch;
-        "></div>
-      </div>
-    `;
-
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) hideModal();
-    });
-
-    document.body.appendChild(modal);
-    modal.querySelector('#ws-ship-summary-close').addEventListener('click', hideModal);
-
-    return modal;
-  }
-
-  function showModal(html) {
-    const modal = ensureModal();
-    modal.querySelector('#ws-ship-summary-body').innerHTML = html;
-    modal.style.display = 'block';
-  }
-
-  function hideModal() {
-    const modal = document.getElementById(MODAL_ID);
-    if (modal) modal.style.display = 'none';
-  }
-
-  // ===== 右下ボタン =====
-  function ensureFab(onClick) {
-    let btn = document.getElementById(FAB_ID);
-    if (btn) return btn;
-
-    btn = document.createElement('button');
-    btn.id = FAB_ID;
-    btn.type = 'button';
-    btn.textContent = '出荷集計';
-    btn.style.cssText = [
-      'position:fixed',
-      'right:14px',
-      'bottom:14px',
-      'z-index:99998',
-      'padding:12px 14px',
-      'border-radius:999px',
-      'border:1px solid #999',
-      'background:#fff',
-      'box-shadow:0 6px 18px rgba(0,0,0,.18)',
-      'font-size:13px',
-      'cursor:pointer'
-    ].join(';');
-
-    btn.addEventListener('click', onClick);
-    document.body.appendChild(btn);
-    return btn;
-  }
-
-  function removeFab() {
-    const btn = document.getElementById(FAB_ID);
-    if (btn) btn.remove();
-  }
-
-  function buildFromEvent(event) {
-    const all = Array.isArray(event.records) ? event.records : [];
-    const shipRecords = all.filter(r => (r?.[FC.operation]?.value === SHIP_VALUE));
-    const rows = aggregate(shipRecords);
-    return { html: render(rows, shipRecords.length) };
+  function clearRendered(mount) {
+    // header等に差し込んだrootだけ消す（他UIを壊さない）
+    try {
+      const root = mount?.querySelector?.('#' + ROOT_ID);
+      if (root) root.remove();
+    } catch (e) {}
   }
 
   function run(event) {
+    // ビュー名が取れないケースもあるので、ここは “一致した時だけ描画” にする
     if (event.viewName !== TARGET_VIEW_NAME) {
-      // 他ビューに移動したらボタン消す（邪魔防止）
-      removeFab();
+      // 他ビューに移動したとき、ヘッダーに残り続けるのが嫌なら消す
+      const m = getMountElLikeStockSummary();
+      if (m) clearRendered(m);
       return event;
     }
 
-    // このビューにいる時だけボタンを保証
-    ensureFab(() => {
-      try {
-        const { html } = buildFromEvent(event);
-        showModal(html);
-      } catch (e) {
-        console.error('[ship-summary] failed', e);
-        showModal('<div style="color:red">集計エラー</div>');
-      }
-    });
+    const mount = getMountElLikeStockSummary();
+    if (!mount) return event;
+
+    // 重複描画防止（既にあるなら更新）
+    clearRendered(mount);
+
+    const all = Array.isArray(event.records) ? event.records : [];
+    const shipRecords = all.filter(r => (r?.[FC.operation]?.value === SHIP_VALUE));
+    const rows = aggregate(shipRecords);
+
+    // mount が #ws-ship-summary 自体なら “そこを丸ごと置き換え”
+    // header領域なら “追記” でもいいが、ここは一貫して innerHTML追加でなく root挿入にする
+    const html = render(rows, shipRecords.length);
+
+    // mountがdivだろうがheaderだろうが、ここでは「rootを追加」する
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+    const root = wrapper.firstElementChild; // styleタグが先に来るので注意
+
+    // style + root を両方入れたいので、wrapper の子を全部append
+    while (wrapper.firstChild) {
+      mount.appendChild(wrapper.firstChild);
+    }
 
     return event;
   }
