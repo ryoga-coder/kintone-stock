@@ -267,13 +267,39 @@
   }
 
   async function run(event) {
-   
-   console.log('SMARTPHONE viewName:', event.viewName);
-   
-   if (event.viewName !== TARGET_VIEW_NAME) return event;
+  if (event.viewName !== TARGET_VIEW_NAME) return event;
 
-    const mount = getMountEl();
-    if (!mount) return event;
+  const mount = getMountEl();
+  if (!mount) return event;
+
+  // ★ mountを潰さない：自分の箱だけ作る
+  let box = mount.querySelector('#ws-ship-box');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'ws-ship-box';
+    box.style.margin = '10px 0';
+    mount.appendChild(box);
+  }
+
+  // 二重描画防止は box内で判定
+  if (box.querySelector && box.querySelector('#' + ROOT_ID)) return event;
+
+  box.textContent = '集計中…';
+
+  try {
+    const appId = getAppIdSafe();
+    const all = await fetchAllRecords(appId);
+    const ship = (all || []).filter(isShipRecord);
+
+    const rows = buildShipSummary(ship);
+    box.innerHTML = render(rows, ship.length);
+  } catch (e) {
+    box.innerHTML = `<div style="color:red">集計エラー<br><pre>${escapeHtml(errToText(e))}</pre></div>`;
+    console.error(e);
+  }
+
+  return event;
+}
 
     // 在庫集計と同じ：rootがあれば二重描画しない
     if (mount.querySelector && mount.querySelector('#' + ROOT_ID)) return event;
