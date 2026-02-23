@@ -1,14 +1,14 @@
 # jsDelivr CDN URLs
 
-- updated_at (UTC): 2026-02-23T00:46:22Z
-- commit: 6b4a043d50b4ebdb7615434690f0e050d2094ad6
+- updated_at (UTC): 2026-02-23T00:50:14Z
+- commit: 1a079a1a53f3be727aa840fad0cb0ee852c0c5eb
 
 ## 固定URL（コミットSHA固定：推奨）
 
-- https://cdn.jsdelivr.net/gh/ryoga-coder/kintone-stock@6b4a043d50b4ebdb7615434690f0e050d2094ad6/dist/app.js
-- https://cdn.jsdelivr.net/gh/ryoga-coder/kintone-stock@6b4a043d50b4ebdb7615434690f0e050d2094ad6/dist/feature_ship_summary_view.js
-- https://cdn.jsdelivr.net/gh/ryoga-coder/kintone-stock@6b4a043d50b4ebdb7615434690f0e050d2094ad6/dist/feature_ui_hide_shipping_on_in.js
-- https://cdn.jsdelivr.net/gh/ryoga-coder/kintone-stock@6b4a043d50b4ebdb7615434690f0e050d2094ad6/dist/stock_summury_view.js
+- https://cdn.jsdelivr.net/gh/ryoga-coder/kintone-stock@1a079a1a53f3be727aa840fad0cb0ee852c0c5eb/dist/app.js
+- https://cdn.jsdelivr.net/gh/ryoga-coder/kintone-stock@1a079a1a53f3be727aa840fad0cb0ee852c0c5eb/dist/feature_ship_summary_view.js
+- https://cdn.jsdelivr.net/gh/ryoga-coder/kintone-stock@1a079a1a53f3be727aa840fad0cb0ee852c0c5eb/dist/feature_ui_hide_shipping_on_in.js
+- https://cdn.jsdelivr.net/gh/ryoga-coder/kintone-stock@1a079a1a53f3be727aa840fad0cb0ee852c0c5eb/dist/stock_summury_view.js
 
 ## main参照（URL固定だがキャッシュ影響あり）
 
