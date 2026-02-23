@@ -267,7 +267,10 @@
   }
 
   async function run(event) {
-    if (event.viewName !== TARGET_VIEW_NAME) return event;
+   
+   console.log('SMARTPHONE viewName:', event.viewName);
+   
+   if (event.viewName !== TARGET_VIEW_NAME) return event;
 
     const mount = getMountEl();
     if (!mount) return event;
