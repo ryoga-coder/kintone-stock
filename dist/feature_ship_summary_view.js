@@ -5,8 +5,16 @@
 (function () {
   'use strict';
 
-  if (!window.WS_ENV?.assertKnownEnv?.()) return;
-  window.WS_ENV.showDevBadge();
+  console.log('[ship] LOADED on', location.href, 'mobile?', !!kintone.mobile);
+
+if (!window.WS_ENV?.assertKnownEnv?.()) {
+  // WS_ENVが無い/判定NGでも、とにかく画面に印を出す（デバッグ用）
+  const mark = document.createElement('div');
+  mark.textContent = 'ship-summary: WS_ENV missing or env unknown';
+  mark.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999999;background:#ff0;padding:6px;font-size:12px;';
+  document.body.appendChild(mark);
+  return;
+}
 
   const TARGET_VIEW_NAME = '出荷履歴';
 
