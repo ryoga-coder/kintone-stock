@@ -1,7 +1,7 @@
 /* =========================================================
- * 出荷履歴（出荷先別サマリ） v3
+ * 出荷履歴（出荷先別サマリ） v3.1
  * - 対象ビュー: 出荷履歴
- * - 月/年 切替 + 樹種（両方/ナラ/杉）フィルタの重ねがけ
+ * - 月/年 切替 + 樹種（すべて/ナラ/スギ）フィルタの重ねがけ
  * - 期間クエリに失敗したら、全件取得→JSフィルタに自動フォールバック
  * ========================================================= */
 (function () {
@@ -22,10 +22,10 @@
 
   const SHIP_VALUE = '出庫';
 
-  const LS_KEY_MODE = 'ws_ship_summary_mode';      // 'month' | 'year'
-  const LS_KEY_YM = 'ws_ship_summary_ym';          // YYYY-MM
-  const LS_KEY_Y = 'ws_ship_summary_y';            // YYYY
-  const LS_KEY_SPECIES = 'ws_ship_summary_species';// 'all' | 'ナラ' | '杉'
+  const LS_KEY_MODE = 'ws_ship_summary_mode';       // 'month' | 'year'
+  const LS_KEY_YM = 'ws_ship_summary_ym';           // YYYY-MM
+  const LS_KEY_Y = 'ws_ship_summary_y';             // YYYY
+  const LS_KEY_SPECIES = 'ws_ship_summary_species'; // 'all' | 'ナラ' | 'スギ'
 
   const MONTH_OPTIONS = 18;
   const YEAR_OPTIONS = 5;
@@ -38,7 +38,7 @@
     return null;
   }
 
-  // ===== mount取得（HTML優先）=====
+  // ===== mount取得 =====
   function getMountEl() {
     const el = document.getElementById(MOUNT_ID);
     if (el) return el;
@@ -55,7 +55,6 @@
   function yyyy(d) { return `${d.getFullYear()}`; }
 
   function normalizeDate(v) {
-    // Date / DateTime どっちでも先頭10桁を日付として扱う
     const s = String(v || '').slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
   }
@@ -80,9 +79,7 @@
 
   function yearRange(yStr) {
     const y = Number(yStr);
-    const s = `${y}-01-01`;
-    const e = `${y}-12-31`;
-    return { start: s, end: e };
+    return { start: `${y}-01-01`, end: `${y}-12-31` };
   }
 
   function lsGet(key, fallback) {
@@ -92,7 +89,7 @@
     try { localStorage.setItem(key, val); } catch (e) {}
   }
 
-  // ===== API（offsetで全件回収）=====
+  // ===== API =====
   async function fetchRecordsByQuery(appId, query) {
     const url = kintone.api.url('/k/v1/records.json', true);
     const limit = 500;
@@ -114,7 +111,6 @@
   }
 
   async function fetchShipByRangeQuery(appId, start, end, speciesMode) {
-    // speciesMode に応じてクエリに樹種条件を追加（速い）
     let q =
       `${FC.operation} = "${SHIP_VALUE}" and ${FC.date} >= "${start}" and ${FC.date} <= "${end}"`;
 
@@ -145,10 +141,8 @@
 
   function filterBySpecies(records, speciesMode) {
     if (!speciesMode || speciesMode === 'all') return records;
-
     return records.filter(r => {
       const sp = (r?.[FC.species]?.value || '').trim();
-      // 厳密一致（文字揺れがあるなら includes に変える）
       return sp === speciesMode;
     });
   }
@@ -196,7 +190,6 @@
     return rows;
   }
 
-  // ===== 描画 =====
   function renderShell(mount) {
     mount.innerHTML = `
       <div id="${ROOT_ID}" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Noto Sans JP', sans-serif;">
@@ -224,9 +217,9 @@
           <div style="display:flex; align-items:center; gap:6px;">
             <span style="opacity:.85;">樹種</span>
             <select id="ws-species" style="padding:4px 8px;">
-              <option value="all">両方</option>
+              <option value="all">すべて</option>
               <option value="ナラ">ナラのみ</option>
-              <option value="杉">杉のみ</option>
+              <option value="スギ">スギのみ</option>
             </select>
           </div>
 
@@ -290,18 +283,10 @@
     `;
   }
 
-  function showError(mount, e) {
-    const body = mount.querySelector('#ws-body');
-    const meta = mount.querySelector('#ws-meta');
-    if (meta) meta.textContent = 'エラー';
-    if (body) body.innerHTML = `<div style="color:#c00;">集計エラー：${escapeHtml(e?.message || String(e))}</div>`;
-    console.error(e);
-  }
-
   function labelSpecies(speciesMode) {
     if (speciesMode === 'ナラ') return 'ナラのみ';
-    if (speciesMode === '杉') return '杉のみ';
-    return '両方';
+    if (speciesMode === 'スギ') return 'スギのみ';
+    return 'すべて';
   }
 
   async function refresh(mount, appId, mode, key, speciesMode) {
@@ -313,23 +298,19 @@
     let records = [];
     let used = '';
 
-    // まず期間クエリ（＋樹種条件）で取得を試す
     try {
       const range = (mode === 'month') ? monthRange(key) : yearRange(key);
       records = await fetchShipByRangeQuery(appId, range.start, range.end, speciesMode);
       used = '期間クエリ';
     } catch (e) {
-      // フォールバック：全件→JSで期間＋樹種フィルタ
       const all = await fetchAllRecords(appId);
       const period = filterByPeriod(all, mode, key);
       records = filterBySpecies(period, speciesMode);
       used = '全件→JSフィルタ（フォールバック）';
     }
 
-    // 念のため最終フィルタ（期間・樹種）
     const period2 = filterByPeriod(records, mode, key);
     const ship = filterBySpecies(period2, speciesMode);
-
     const rows = buildSummary(ship);
 
     if (meta) {
@@ -388,61 +369,40 @@
       return selSpecies?.value || currentSpecies || 'all';
     }
 
-    // 初回
     try {
       await refresh(mount, appId, mode, currentKey(mode), currentSpeciesMode());
     } catch (e) {
-      showError(mount, e);
+      console.error(e);
     }
 
-    // イベント
     if (selMode) {
       selMode.onchange = async () => {
         const m = selMode.value;
         lsSet(LS_KEY_MODE, m);
         applyModeUI(m);
-        try {
-          await refresh(mount, appId, m, currentKey(m), currentSpeciesMode());
-        } catch (e) {
-          showError(mount, e);
-        }
+        await refresh(mount, appId, m, currentKey(m), currentSpeciesMode());
       };
     }
 
     if (selYm) {
       selYm.onchange = async () => {
-        const key = selYm.value;
-        lsSet(LS_KEY_YM, key);
-        try {
-          await refresh(mount, appId, 'month', key, currentSpeciesMode());
-        } catch (e) {
-          showError(mount, e);
-        }
+        lsSet(LS_KEY_YM, selYm.value);
+        await refresh(mount, appId, 'month', selYm.value, currentSpeciesMode());
       };
     }
 
     if (selY) {
       selY.onchange = async () => {
-        const key = selY.value;
-        lsSet(LS_KEY_Y, key);
-        try {
-          await refresh(mount, appId, 'year', key, currentSpeciesMode());
-        } catch (e) {
-          showError(mount, e);
-        }
+        lsSet(LS_KEY_Y, selY.value);
+        await refresh(mount, appId, 'year', selY.value, currentSpeciesMode());
       };
     }
 
     if (selSpecies) {
       selSpecies.onchange = async () => {
-        const sp = selSpecies.value;
-        lsSet(LS_KEY_SPECIES, sp);
-        const m = selMode?.value || mode || 'month';
-        try {
-          await refresh(mount, appId, m, currentKey(m), sp);
-        } catch (e) {
-          showError(mount, e);
-        }
+        lsSet(LS_KEY_SPECIES, selSpecies.value);
+        const m = selMode?.value || 'month';
+        await refresh(mount, appId, m, currentKey(m), selSpecies.value);
       };
     }
 
